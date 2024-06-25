@@ -39,53 +39,34 @@ class T1w2MraDataset(Dataset):
         self.id_dict = self._get_id_dict()
 
     def __len__(self):
-        return self.id_list[-1].get("total_running_slices")
+        samples = len(self._get_id_dict())
+
+        key = next(iter(self.id_dict))
+        path = self.id_dict[key]["mri_path"]
+        slices = self._get_num_slices(path)
+
+        return samples * slices
 
     def __getitem__(self, idx):
-        length = len(self)
-        file_idx = idx/self.id_list[0].get("total_running_slices")
-        while True:
-            slice_idx = self.id_list[file_idx].get("total_running_slices")
-            slice_low_idx = self.id_list[file_idx - 1].get("total_running_slices") if file_idx > 0 else 0
 
-            # Check if idx is within the current range
-            if (slice_low_idx is None or idx >= slice_low_idx) and (idx <= slice_idx):
-                mri_path = self.id_list[file_idx].get("mri_path")
-                mra_path = self.id_list[file_idx].get("mra_path")
-                my_mri = nib.load(mri_path).get_fdata()
-                my_mra = nib.load(mra_path).get_fdata()
-                slice_idx = idx - slice_low_idx
-                mri_slice = my_mri[:, :, slice_idx]
-                mra_slice = my_mra[:, :, slice_idx]
-                return mri_slice, mra_slice
-            # Go to next or previous file index
-            elif (idx < slice_low_idx and idx >= 0):
-                file_idx -= 1
-            elif (idx >= slice_idx and idx < length):
-                file_idx += 1
-            else:
-                raise IndexError("Index out of range")
 
-    def _get_id_list(self):
+    def _get_id_dict(self):
 
         ids = get_matched_ids([self.mri_dir, self.mra_dir],
                               split_char=self.split_char)
-        id_list = []
-        slices = 0
+        id_dict = {}
+
         for id in ids:
             matching_mri = [path for path in self.mri_paths if id in path]
             matching_mra = [path for path in self.mra_paths if id in path]
-        
             if len(matching_mri) == 1 and len(matching_mra) == 1:
-                id_list[id] = {"mri_path": matching_mri[0],
-                               "mra_path": matching_mra[0],
-                               "total_running_slices": slices}
-                slices += self._get_num_slices(matching_mri[0])
+                id_dict[id] = {"mri_path": matching_mri[0],
+                               "mra_path": matching_mra[0]}
             else:
                 raise ValueError(f"ID {id} has {len(matching_mri)} MRI images "
                                  f"and {len(matching_mra)} MRA images. There "
                                  f"should be exactly one of each.")
-        return id_list
+        return id_dict
 
     def _get_num_slices(self, filepath):
         '''
