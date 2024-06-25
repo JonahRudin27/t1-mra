@@ -1,117 +1,126 @@
 import torch
 import torch.nn as nn
-from torchvision import models
-from torch.nn.functional import gelu, relu
+
+### source: https://github.com/nikhilroxtomar/Semantic-Segmentation-Architecture/tree/main
+
+""" Convolutional block:
+    It follows a two 3x3 convolutional layer, each followed by a batch normalization and a relu activation.
+"""
+class conv_block(nn.Module):
+    def __init__(self, in_c, out_c):
+        super().__init__()
+
+        self.conv1 = nn.Conv2d(in_c, out_c, kernel_size=3, padding=1)
+        self.bn1 = nn.BatchNorm2d(out_c)
+
+        self.conv2 = nn.Conv2d(out_c, out_c, kernel_size=3, padding=1)
+        self.bn2 = nn.BatchNorm2d(out_c)
+
+        self.relu = nn.ReLU()
+
+    def forward(self, inputs):
+        x = self.conv1(inputs)
+        x = self.bn1(x)
+        x = self.relu(x)
+
+        x = self.conv2(x)
+        x = self.bn2(x)
+        x = self.relu(x)
+
+        return x
+
+""" Encoder block:
+    It consists of an conv_block followed by a max pooling.
+    Here the number of filters doubles and the height and width half after every block.
+"""
+class encoder_block(nn.Module):
+    def __init__(self, in_c, out_c):
+        super().__init__()
+
+        self.conv = conv_block(in_c, out_c)
+        self.pool = nn.MaxPool2d((2, 2))
+
+    def forward(self, inputs):
+        x = self.conv(inputs)
+        p = self.pool(x)
+
+        return x, p
+
+
+""" Decoder block:
+    The decoder block begins with a transpose convolution, followed by a concatenation with the skip
+    connection from the encoder block. Next comes the conv_block.
+    Here the number filters decreases by half and the height and width doubles.
+"""
+class decoder_block(nn.Module):
+    def __init__(self, in_c, out_c):
+        super().__init__()
+
+        self.up = nn.ConvTranspose2d(in_c, out_c, kernel_size=2, stride=2, padding=0)
+        self.conv = conv_block(out_c+out_c, out_c)
+
+    def forward(self, inputs, skip):
+        x = self.up(inputs)
+        x = torch.cat([x, skip], axis=1)
+        x = self.conv(x)
+
+        return x
 
 
 class UNet(nn.Module):
-    """
-    U-Net Model Architecture
-
-    See: https://arxiv.org/abs/1606.06650
-    """
-
-    def __init__(self, input_dim, output_dim, batch_size, input_channels=1, output_channels=1):
+    def __init__(self, in_channels, out_channels):
         super().__init__()
-        conv_kwargs = {
-            "kernel_size": (3, 3),
-            "padding": "same",
-        }
 
-        # Decoder convolutional transpose keyword arguments
-        conv_trans_kwargs = {
-            "kernel_size": (2, 2),
-            "stride": 2,
-            "padding": "same"
-        }
+        """ Encoder """
+        self.e1 = encoder_block(3, 64)
+        self.e2 = encoder_block(64, 128)
+        self.e3 = encoder_block(128, 256)
+        self.e4 = encoder_block(256, 512)
 
-        # encoder
-        self.e1a = nn.Conv2d(input_channels, 64, **conv_kwargs)
-        self.e1b = nn.Conv2d(64, 64, **conv_kwargs)
-        self.pool1 = nn.MaxPool2d(kernel_size=2, stride=2) # output: 284x284x64
+        """ Bottleneck """
+        self.b = conv_block(512, 1024)
 
-        self.e2a = nn.Conv2d(64, 128, **conv_kwargs)
-        self.e2b = nn.Conv2d(128, 128, **conv_kwargs)
-        self.pool2 = nn.MaxPool2d(kernel_size=2, stride=2)
+        """ Decoder """
+        self.d1 = decoder_block(1024, 512)
+        self.d2 = decoder_block(512, 256)
+        self.d3 = decoder_block(256, 128)
+        self.d4 = decoder_block(128, 64)
 
-        self.e3a = nn.Conv2d(128, 256, **conv_kwargs)
-        self.e3b = nn.Conv2d(256, 256, **conv_kwargs)
-        self.pool3 = nn.MaxPool2d(kernel_size=2, stride=2)
+        """ Classifier """
+        self.outputs = nn.Conv2d(64, 1, kernel_size=1, padding=0)
 
-        self.e4a = nn.Conv2d(256, 512, **conv_kwargs)
-        self.e4b = nn.Conv2d(512, 512, **conv_kwargs)
-        self.pool4 = nn.MaxPool2d(kernel_size=2, stride=2)
+    def forward(self, inputs):
+        """ Encoder """
+        s1, p1 = self.e1(inputs)
+        s2, p2 = self.e2(p1)
+        s3, p3 = self.e3(p2)
+        s4, p4 = self.e4(p3)
 
-        self.e5a = nn.Conv2d(512, 1024, **conv_kwargs)
-        self.e5b = nn.Conv2d(1024, 1024, **conv_kwargs)
+        """ Bottleneck """
+        b = self.b(p4)
 
+        """ Decoder """
+        d1 = self.d1(b, s4)
+        d2 = self.d2(d1, s3)
+        d3 = self.d3(d2, s2)
+        d4 = self.d4(d3, s1)
 
-        # decoder
-        self.upconv1 = nn.ConvTranspose2d(1024, 512, **conv_trans_kwargs)
-        self.d1a = nn.Conv2d(1024, 512, **conv_kwargs)
-        self.d1b = nn.Conv2d(512, 512, **conv_kwargs)
+        """ Classifier """
+        outputs = self.outputs(d4)
 
-        self.upconv2 = nn.ConvTranspose(512, 256, **conv_trans_kwargs)
-        self.d2a = nn.Conv2d(512, 256, **conv_kwargs)
-        self.d2b = nn.Conv2d(256, 256, **conv_kwargs)
+        return outputs
 
-        self.upconv3 = nn.ConvTranspose(256, 128, **conv_trans_kwargs)
-        self.d3a = nn.Conv2d(256, 128, **conv_kwargs)
-        self.d3b = nn.Conv2d(128, 128, **conv_kwargs)
+if __name__ == "__main__":
+    # inputs = torch.randn((2, 32, 256, 256))
+    # e = encoder_block(32, 64)
+    # x, p = e(inputs)
+    # print(x.shape, p.shape)
+    #
+    # d = decoder_block(64, 32)
+    # y = d(p, x)
+    # print(y.shape)
 
-        self.upconv4 = nn.ConvTranspose(128, 64, **conv_trans_kwargs)
-        self.d4a = nn.Conv2d(128, 64, **conv_kwargs)
-        self.d4b = nn.Conv2d(64, 64, **conv_kwargs)
-
-        # output
-        self.out = nn.Conv2d(64, output_channels, **conv_kwargs)
-
-    def forward(self, x, act_funct=gelu):
-
-        #encoding
-        x = act_funct(self.e1a(x))
-        x = act_funct(self.e1b(x))
-        skip1 = x
-        x = self.pool1(x)
-
-        x = act_funct(self.e2a(x))
-        x = act_funct(self.e2b(x))
-        skip2 = x
-        x = self.pool2(x)
-
-        x = act_funct(self.e3a(x))
-        x = act_funct(self.e3b(x))
-        skip3 = x
-        x = self.pool3(x)
-
-        x = act_funct(self.e4a(x))
-        x = act_funct(self.e4b(x))
-        skip4 = x
-        x = self.pool4(x)
-
-        x = act_funct(self.e5a(x))
-        x = act_funct(self.e5b(x))
-
-        #decoding
-        x = self.upconv1(x)
-        x = torch.cat((x, skip4), dim=1)
-        x = act_funct(self.d1a(x))
-        x = act_funct(self.d1b(x))
-
-        x = self.upconv2(x)
-        x = torch.cat((x, skip3), dim=1)
-        x = act_funct(self.d2a(x))
-        x = act_funct(self.d2b(x))
-
-        x = self.upconv3(x)
-        x = torch.cat((x, skip2), dim=1)
-        x = act_funct(self.d3a(x))
-        x = act_funct(self.d3b(x))
-
-        x = self.upconv4(x)
-        x = torch.cat((x, skip1), dim=1)
-        x = act_funct(self.d4a(x))
-        x = act_funct(self.d4b(x))
-        out = self.out(x)
-
-        return out
+    inputs = torch.randn((2, 3, 512, 512))
+    model = build_unet()
+    y = model(inputs)
+    print(y.shape)
